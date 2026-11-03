@@ -11,11 +11,12 @@ Payload is a Next.js native CMS with TypeScript-first architecture, providing ad
 
 | Task                     | Solution                                                                   | Details                                                                                                                          |
 | ------------------------ | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Auto-generate slugs      | `slugField()`                                                              | [FIELDS.md#slug-field-helper](reference/FIELDS.md#slug-field-helper)                                                             |
+| Auto-generate slugs      | `{ type: 'slug', useAsSlug: 'title' }`                                     | [FIELDS.md#slug-field](reference/FIELDS.md#slug-field)                                                                           |
 | Restrict content by user | Access control with query                                                  | [ACCESS-CONTROL.md#row-level-security-with-complex-queries](reference/ACCESS-CONTROL.md#row-level-security-with-complex-queries) |
 | Local API user ops       | `user` + `overrideAccess: false`                                           | [QUERIES.md#access-control-in-local-api](reference/QUERIES.md#access-control-in-local-api)                                       |
 | Draft/publish workflow   | `versions: { drafts: true }`                                               | [COLLECTIONS.md#versioning--drafts](reference/COLLECTIONS.md#versioning--drafts)                                                 |
 | Computed fields          | `virtual: true` with **field-level** `hooks.afterRead` returning the value | [FIELDS.md#virtual-fields](reference/FIELDS.md#virtual-fields)                                                                   |
+| Document titles          | Stored top-level field in `admin.useAsTitle`                               | [COLLECTIONS.md#useastitle](reference/COLLECTIONS.md#useastitle)                                                                 |
 | Conditional fields       | `admin.condition`                                                          | [FIELDS.md#conditional-fields](reference/FIELDS.md#conditional-fields)                                                           |
 | Custom field validation  | `validate` function                                                        | [FIELDS.md#validation](reference/FIELDS.md#validation)                                                                           |
 | Filter relationship list | `filterOptions` on field                                                   | [FIELDS.md#relationship](reference/FIELDS.md#relationship)                                                                       |
@@ -89,21 +90,25 @@ Apply these defaults when modeling content unless there's a clear reason not to:
   `_status` field (`draft` / `published` / `changed`) — **don't add your own
   `status` field**, it's redundant. Only skip versions for collections that have
   no publish/draft lifecycle (e.g. internal join tables, settings).
-- **Use `slugField()` for all slugs** instead of hand-rolling
+- **Use the native `slug` field type for all slugs** instead of hand-rolling
   `{ name: 'slug', type: 'text', unique: true }`. It auto-generates the slug from
-  the title, adds a regenerate toggle, and handles uniqueness/indexing for you.
-  It defaults to generating from a `title` field — if the collection has no
-  `title`, pass the source field: `slugField({ useAsSlug: 'name' })`.
+  a source field, adds a regenerate toggle, and defaults to `required`, `unique`,
+  `index`, and `position: 'sidebar'`. `useAsSlug` is **required** — name the
+  source field to generate from: `{ name: 'slug', type: 'slug', useAsSlug: 'title' }`.
 - **`position: 'sidebar'` is for short, at-a-glance fields** — status, category,
   author, publish date. Avoid it for long fields that need horizontal space to be
   usable (description, rich text content, long text). Those belong in the main
   document area.
+- **Use a stored top-level field for `admin.useAsTitle`.** Never set
+  `admin.useAsTitle` to a computed field configured with `virtual: true`; these
+  fields are not queryable and Payload rejects the configuration. A
+  relationship-path virtual such as `virtual: 'author.name'` is supported, but
+  use it only when the title must come from a related document.
 
 ### Basic Collection
 
 ```ts
 import type { CollectionConfig } from 'payload'
-import { slugField } from 'payload'
 
 export const Posts: CollectionConfig = {
   slug: 'posts',
@@ -117,7 +122,7 @@ export const Posts: CollectionConfig = {
   },
   fields: [
     { name: 'title', type: 'text', required: true },
-    slugField(), // auto-generates from `title`, unique + indexed, sidebar position
+    { name: 'slug', type: 'slug', useAsSlug: 'title' }, // auto-generates from `title`, unique + indexed, sidebar position
     { name: 'content', type: 'richText' }, // long field — stays in the main area, not the sidebar
     // short, at-a-glance field — good sidebar candidate
     { name: 'author', type: 'relationship', relationTo: 'users', admin: { position: 'sidebar' } },
@@ -140,8 +145,8 @@ For more collection patterns (auth, upload, drafts, live preview), see [COLLECTI
 // Rich text
 { name: 'content', type: 'richText', required: true }
 
-// Slug — use the helper instead of a hand-rolled text field
-slugField()
+// Slug — use the native field type instead of a hand-rolled text field
+{ name: 'slug', type: 'slug', useAsSlug: 'title' }
 
 // Select (for genuine taxonomy — NOT publish state; use versions.drafts + _status for that)
 { name: 'category', type: 'select', options: ['news', 'tutorial', 'opinion'] }
@@ -225,6 +230,7 @@ export const ownPostsOnly: Access = ({ req }) => {
 // Local API
 const posts = await payload.find({
   collection: 'posts',
+  overrideAccess: true,
   where: {
     status: { equals: 'published' },
     'author.name': { contains: 'john' },
@@ -237,6 +243,7 @@ const posts = await payload.find({
 // Query with populated relationships
 const post = await payload.findByID({
   collection: 'posts',
+  overrideAccess: true,
   id: '123',
   depth: 2, // Populates relationships (default is 2)
 })
@@ -245,6 +252,7 @@ const post = await payload.findByID({
 // Without depth, relationships return IDs only
 const post = await payload.findByID({
   collection: 'posts',
+  overrideAccess: true,
   id: '123',
   depth: 0,
 })
@@ -260,23 +268,32 @@ For all query operators and REST/GraphQL examples, see [QUERIES.md](reference/QU
 import { getPayload } from 'payload'
 import config from '@payload-config'
 
-export async function GET() {
+export async function GET(request: Request) {
   const payload = await getPayload({ config })
+  const { user } = await payload.auth({ headers: request.headers })
 
   const posts = await payload.find({
     collection: 'posts',
+    overrideAccess: false, // this route answers for whoever called it
+    user,
   })
 
   return Response.json(posts)
 }
 
 // In Server Components
+import { headers } from 'next/headers'
 import { getPayload } from 'payload'
 import config from '@payload-config'
 
 export default async function Page() {
   const payload = await getPayload({ config })
-  const { docs } = await payload.find({ collection: 'posts' })
+  const { user } = await payload.auth({ headers: await headers() })
+  const { docs } = await payload.find({
+    collection: 'posts',
+    overrideAccess: false,
+    user,
+  })
 
   return <div>{docs.map(post => <h1 key={post.id}>{post.title}</h1>)}</div>
 }
@@ -286,27 +303,29 @@ export default async function Page() {
 
 ### 1. Local API Access Control (CRITICAL)
 
-**By default, Local API operations bypass ALL access control**, even when passing a user.
+**`overrideAccess: true` bypasses ALL access control**, even when a user is passed.
 
 ```ts
-// ❌ SECURITY BUG: Passes user but ignores their permissions
-await payload.find({
-  collection: 'posts',
-  user: someUser, // Access control is BYPASSED!
-})
-
-// ✅ SECURE: Actually enforces the user's permissions
+// ❌ SECURITY BUG: Passes user but bypasses their permissions anyway
 await payload.find({
   collection: 'posts',
   user: someUser,
-  overrideAccess: false, // REQUIRED for access control
+  overrideAccess: true, // Access control is BYPASSED!
+})
+
+// ✅ SECURE: Respects the user's permissions — this is the default, overrideAccess can be omitted
+await payload.find({
+  collection: 'posts',
+  user: someUser,
 })
 ```
 
-**When to use each:**
+On Local API operations where `overrideAccess` is optional, it defaults to `false` — Access Control is respected unless explicitly bypassed.
 
-- `overrideAccess: true` (default) - Server-side operations you trust (cron jobs, system tasks)
-- `overrideAccess: false` - When operating on behalf of a user (API routes, webhooks)
+- Omit it, or set `overrideAccess: false` - operating on behalf of a user (API routes, user-facing server functions, and webhooks acting as a user). Pass `user` alongside it.
+- `overrideAccess: true` - trusted system work (cron jobs, seeds, migrations, system tasks, and independently authenticated webhooks intentionally granted full permissions)
+
+Never set `overrideAccess: true` out of habit or by copying a nearby call — pick the value this call means.
 
 See [QUERIES.md#access-control-in-local-api](reference/QUERIES.md#access-control-in-local-api).
 
@@ -321,6 +340,7 @@ hooks: {
     async ({ doc, req }) => {
       await req.payload.create({
         collection: 'audit-log',
+        overrideAccess: true,
         data: { docId: doc.id },
         // Missing req - runs in separate transaction!
       })
@@ -334,6 +354,7 @@ hooks: {
     async ({ doc, req }) => {
       await req.payload.create({
         collection: 'audit-log',
+        overrideAccess: true,
         data: { docId: doc.id },
         req, // Maintains atomicity
       })
@@ -355,6 +376,7 @@ hooks: {
     async ({ doc, req }) => {
       await req.payload.update({
         collection: 'posts',
+        overrideAccess: true,
         id: doc.id,
         data: { views: doc.views + 1 },
         req,
@@ -371,6 +393,7 @@ hooks: {
 
       await req.payload.update({
         collection: 'posts',
+        overrideAccess: true,
         id: doc.id,
         data: { views: doc.views + 1 },
         context: { skipHooks: true },
@@ -434,7 +457,7 @@ import type { Post, User } from '@/payload-types'
 
 ## Common Gotchas
 
-1. **Local API bypasses access control** unless you pass `overrideAccess: false`
+1. **Local API operations with optional `overrideAccess` respect access control by default** — set it to `true` only for trusted server-side work
 2. **Missing `req` in nested operations** breaks transaction atomicity
 3. **Hook loops** — operations in hooks can re-trigger the same hooks; use `req.context` flags
 4. **Field-level access** returns boolean only, no query constraints
@@ -444,6 +467,7 @@ import type { Post, User } from '@/payload-types'
 8. **MongoDB transactions** require replica set configuration
 9. **SQLite transactions** are disabled by default; enable with `transactionOptions: {}`
 10. **Point fields** are not supported in SQLite
+11. **Computed virtual titles** — fields configured with `virtual: true` cannot be used in `admin.useAsTitle`; use a stored top-level field
 
 ## Best Practices
 
@@ -451,14 +475,16 @@ import type { Post, User } from '@/payload-types'
 
 - Enable `versions: { drafts: true }` by default on content collections; rely on the
   auto-injected `_status` field rather than adding a custom `status` field
-- Use `slugField()` for slugs instead of hand-rolling a unique text field
+- Use the native `slug` field type for slugs instead of hand-rolling a unique text field
+- Use a stored top-level field for `admin.useAsTitle`; never use a computed
+  `virtual: true` field as the title
 - Reserve `position: 'sidebar'` for short, at-a-glance fields (status, category,
   author, date); keep long fields (description, rich text) in the main area
 
 ### Security
 
 - Default to restrictive access, gradually add permissions
-- Use `overrideAccess: false` when passing `user` to Local API
+- Use `overrideAccess: false` whenever the call acts for a user, and pass that `user`
 - Field-level access only returns boolean (no query constraints)
 - Never trust client-provided data
 - Use `saveToJWT: true` for roles to avoid database lookups

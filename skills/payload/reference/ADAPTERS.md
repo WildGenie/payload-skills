@@ -59,6 +59,7 @@ const afterChange: CollectionAfterChangeHook = async ({ req, doc }) => {
   await req.payload.create({
     req, // Pass req to use same transaction
     collection: 'audit-log',
+    overrideAccess: true,
     data: { action: 'created', docId: doc.id },
   })
 }
@@ -68,11 +69,13 @@ const transactionID = await payload.db.beginTransaction()
 try {
   await payload.create({
     collection: 'orders',
+    overrideAccess: true,
     data: orderData,
     req: { transactionID },
   })
   await payload.update({
     collection: 'inventory',
+    overrideAccess: true,
     id: itemId,
     data: { stock: newStock },
     req: { transactionID },
@@ -98,6 +101,7 @@ const resaveChildren: CollectionAfterChangeHook = async ({ collection, doc, req 
   // Find children - pass req
   const children = await req.payload.find({
     collection: 'children',
+    overrideAccess: true,
     where: { parent: { equals: doc.id } },
     req, // Maintains transaction context
   })
@@ -107,6 +111,7 @@ const resaveChildren: CollectionAfterChangeHook = async ({ collection, doc, req 
     await req.payload.update({
       id: child.id,
       collection: 'children',
+      overrideAccess: true,
       data: { updatedField: 'value' },
       req, // Same transaction as parent operation
     })
@@ -117,6 +122,7 @@ const resaveChildren: CollectionAfterChangeHook = async ({ collection, doc, req 
 const brokenHook: CollectionAfterChangeHook = async ({ collection, doc, req }) => {
   const children = await req.payload.find({
     collection: 'children',
+    overrideAccess: true,
     where: { parent: { equals: doc.id } },
     // Missing req - separate transaction or no transaction
   })
@@ -125,6 +131,7 @@ const brokenHook: CollectionAfterChangeHook = async ({ collection, doc, req }) =
     await req.payload.update({
       id: child.id,
       collection: 'children',
+      overrideAccess: true,
       data: { updatedField: 'value' },
       // Missing req - if parent operation fails, these updates persist
     })
@@ -161,7 +168,6 @@ Available storage adapters:
 - **@payloadcms/storage-gcs** - Google Cloud Storage
 - **@payloadcms/storage-r2** - Cloudflare R2
 - **@payloadcms/storage-vercel-blob** - Vercel Blob
-- **@payloadcms/storage-uploadthing** - Uploadthing
 
 ### AWS S3
 
@@ -263,26 +269,6 @@ export default buildConfig({
         media: true,
       },
       token: process.env.BLOB_READ_WRITE_TOKEN,
-    }),
-  ],
-})
-```
-
-### Uploadthing
-
-```ts
-import { uploadthingStorage } from '@payloadcms/storage-uploadthing'
-
-export default buildConfig({
-  plugins: [
-    uploadthingStorage({
-      collections: {
-        media: true,
-      },
-      options: {
-        token: process.env.UPLOADTHING_TOKEN,
-        acl: 'public-read',
-      },
     }),
   ],
 })
